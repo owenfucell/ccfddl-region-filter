@@ -18,6 +18,7 @@
     // ---------------------------------------------------------------------------
     var DATA = /*__REGION_DATA__*/ null /*__END_REGION_DATA__*/;
 
+    var VERSION = /*__VERSION__*/ '0.0.0' /*__END_VERSION__*/;
     var LS_SELECTED = 'ccfrf_selected';
     var SS_RECOVERED = 'ccfrf_recovered';
     var LS_COLLAPSED = 'ccfrf_collapsed';
@@ -206,16 +207,33 @@
       return out;
     }
 
-    // Bound on purpose: the wasm-bindgen glue calls this both as `window.fetch(r)`
+    // Bound on purpose: the wasm-bindgen glue calls fetch both as `window.fetch(r)`
     // and as a bare `fetch(r)`, and a bare call inside this strict-mode wrapper
     // would forward `this === undefined` to the native fetch ("Illegal invocation").
-    var origFetch = window.fetch.bind(window);
-    window.fetch = function (input, init) {
+    var nativeFetch = window.fetch.bind(window);
+    var delegate = nativeFetch;   // whoever patched fetch after us, if anyone
+    var depth = 0;
+
+    function callDelegate(args) {
+      // Another extension's wrapper may have captured our wrapper as its
+      // "original" and call back into us. Guard the depth so the two cannot
+      // bounce forever: a re-entrant call goes straight to the network.
+      depth++;
+      try {
+        return delegate.apply(null, args);
+      } finally {
+        depth--;
+      }
+    }
+
+    function fetchWrapper(input, init) {
+      if (depth) return nativeFetch.apply(null, arguments);
+
       var url = '';
       try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) {}
-      if (!CONF_URL_RE.test(url)) return origFetch.apply(null, arguments);
+      if (!CONF_URL_RE.test(url)) return callDelegate(arguments);
 
-      return origFetch.apply(null, arguments).then(function (res) {
+      return callDelegate(arguments).then(function (res) {
         if (!res || !res.ok) return res;
         return res.text().then(function (text) {
           var result;
@@ -239,7 +257,54 @@
           return rebuildResponse(result.text, res);
         });
       });
-    };
+    }
+
+    // Own the fetch property rather than merely assigning it. Other extensions
+    // patch fetch too, and a plain assignment loses to whoever writes last --
+    // which is a coin toss that changes from page load to page load. With an
+    // accessor, a later `window.fetch = theirs` puts them *under* us instead of
+    // replacing us, and everyone still gets to run.
+    function installFetchHook() {
+      var desc = Object.getOwnPropertyDescriptor(window, 'fetch');
+      if (desc && desc.get === getFetch) return true;
+      // Whatever currently sits on window.fetch becomes our delegate, so a hook
+      // that replaced the property outright keeps working underneath us.
+      try {
+        var current = desc ? (desc.value || (desc.get && desc.get.call(window))) : window.fetch;
+        if (typeof current === 'function' && current !== fetchWrapper) {
+          delegate = typeof current.bind === 'function' ? current.bind(window) : current;
+        }
+      } catch (e) { /* leave the previous delegate in place */ }
+      if (desc && !desc.configurable) {
+        window.fetch = fetchWrapper;   // best effort
+        return window.fetch === fetchWrapper;
+      }
+      try {
+        Object.defineProperty(window, 'fetch', {
+          configurable: true,
+          enumerable: true,
+          get: getFetch,
+          set: function (v) {
+            if (typeof v === 'function' && v !== fetchWrapper) {
+              delegate = typeof v.bind === 'function' ? v.bind(window) : v;
+            }
+          }
+        });
+        return true;
+      } catch (e) {
+        window.fetch = fetchWrapper;
+        return window.fetch === fetchWrapper;
+      }
+    }
+
+    function getFetch() { return fetchWrapper; }
+
+    installFetchHook();
+    // Someone can still redefine the property outright; re-take it for a while,
+    // which is all the time that matters -- the app asks for its data up front.
+    [0, 50, 150, 400, 1000, 2500, 6000].forEach(function (ms) {
+      setTimeout(installFetchHook, ms);
+    });
 
     // ---------------------------------------------------------------------------
     // UI
@@ -282,6 +347,7 @@
       'padding:10px 12px;font-size:var(--font-size-sm,14px);color:#4a4a4a;background:rgba(127,127,127,.04)}',
       '#ccfrf-panel .ccfrf-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none}',
       '#ccfrf-panel .ccfrf-title{font-weight:600}',
+      '#ccfrf-panel .ccfrf-ver{color:#c0c4cc;font-size:12px;font-weight:400}',
       '#ccfrf-panel .ccfrf-sum{color:#909399;font-weight:400;flex:1 1 auto;min-width:120px}',
       '#ccfrf-panel .ccfrf-caret{color:#909399;transition:transform .15s ease}',
       '#ccfrf-panel.ccfrf-collapsed .ccfrf-body{display:none}',
@@ -326,7 +392,7 @@
 
       var head = document.createElement('div');
       head.className = 'ccfrf-head';
-      ['ccfrf-caret', 'ccfrf-title', 'ccfrf-sum'].forEach(function (cls) {
+      ['ccfrf-caret', 'ccfrf-title', 'ccfrf-ver', 'ccfrf-sum'].forEach(function (cls) {
         var sp = document.createElement('span');
         sp.className = cls;
         if (cls === 'ccfrf-caret') sp.textContent = '▾';
@@ -447,6 +513,7 @@
       var en = useEnglish();
 
       panelEl.querySelector('.ccfrf-title').textContent = '🌍 ' + t('地区筛选', 'Region filter');
+      panelEl.querySelector('.ccfrf-ver').textContent = 'v' + VERSION;
 
       // checkbox states
       DATA.tree.forEach(function (group) {
@@ -500,8 +567,12 @@
           + 'in chrome://extensions, then reload this page.');
       } else if (!stats.intercepted) {
         countEl.className = 'ccfrf-count ccfrf-warn';
-        countEl.textContent = t('⚠ 未拦截到会议数据请求，筛选可能未生效',
-                                '⚠ conference data request not intercepted; filter may be inactive');
+        countEl.textContent = t(
+          '⚠ 没拦到会议数据请求，本次筛选未生效。可能是页面被浏览器预加载，或有别的扩展抢先接管了'
+          + ' fetch —— 手动刷新一次通常就好。',
+          '⚠ The conference data request was not intercepted, so nothing was filtered. The page '
+          + 'may have been preloaded, or another extension may have taken over fetch -- a manual '
+          + 'refresh usually fixes it.');
       } else {
         var n = matchCount(draft);
         countEl.className = 'ccfrf-count';

@@ -254,5 +254,42 @@ check('no reload once the data was intercepted normally', c.eval('globalThis.__r
 check('recovery marker cleared after a good load',
       c.eval('sessionStorage.getItem("ccfrf_recovered") === null'))
 
+print('\n== 17. surviving another extension that also patches fetch ==')
+
+def with_other_patch(js):
+    c = new_ctx(['us'])
+    c.eval(js)
+    return c
+
+# (a) a hook installed after us that kept its own early reference to fetch
+c = with_other_patch("""
+  var theirs = function () { globalThis.__otherCalled++; return __nativeFetch.apply(null, arguments); };
+  window.fetch = theirs;
+""")
+check('our filter survives a later window.fetch assignment',
+      fetch_filtered(c) == V.filter_yaml(RAW, {'us'})['text'])
+check('the other hook still runs', c.eval('globalThis.__otherCalled') == 1)
+
+# (b) a hook that captured our wrapper and calls back into it
+c = with_other_patch("""
+  var captured = window.fetch;
+  window.fetch = function () { globalThis.__otherCalled++; return captured.apply(null, arguments); };
+""")
+check('no infinite recursion when the other hook chains back into us',
+      fetch_filtered(c) == V.filter_yaml(RAW, {'us'})['text'])
+check('the chained hook ran exactly once', c.eval('globalThis.__otherCalled') == 1)
+
+# (c) a hook that redefines the property outright, wiping our accessor
+c = with_other_patch("""
+  var theirs = function () { globalThis.__otherCalled++; return __nativeFetch.apply(null, arguments); };
+  Object.defineProperty(window, 'fetch', { value: theirs, configurable: true, writable: true });
+""")
+check('property was taken from us', c.eval('window.fetch.toString().indexOf("CONF_URL_RE") === -1'))
+c.eval('__runTimers();')
+check('we re-take it shortly after', c.eval('window.fetch.toString().indexOf("CONF_URL_RE") !== -1'))
+check('filtering works again after re-taking',
+      fetch_filtered(c) == V.filter_yaml(RAW, {'us'})['text'])
+check('the displaced hook was adopted, not dropped', c.eval('globalThis.__otherCalled') == 1)
+
 print('\n' + ('ALL CHECKS PASSED' if not fails else '%d CHECK(S) FAILED: %s' % (len(fails), fails)))
 sys.exit(1 if fails else 0)

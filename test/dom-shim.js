@@ -192,8 +192,10 @@
 
   // network stub: the userscript captures this as origFetch
   globalThis.__fetchLog = [];
+  globalThis.__otherCalled = 0;
   globalThis.fetch = function (url) {
     globalThis.__fetchLog.push(String(url));
     return Promise.resolve(new globalThis.Response(globalThis.__YAML, { status: 200, statusText: 'OK' }));
   };
+  globalThis.__nativeFetch = globalThis.fetch;   // reference a "third party" captured early
 })();
