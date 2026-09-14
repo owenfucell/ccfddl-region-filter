@@ -54,7 +54,38 @@
     };
   }
   Element.prototype._cls = function () { return this.className ? this.className.split(/\s+/) : []; };
-  Element.prototype.appendChild = function (c) { c.parentNode = this; this.childNodes.push(c); return c; };
+  function camel(n) { return n.replace(/-(\w)/g, function (_, c) { return c.toUpperCase(); }); }
+  Element.prototype.setAttribute = function (n, v) {
+    this._attrs = this._attrs || {};
+    this._attrs[n] = String(v);
+    if (n.indexOf('data-') === 0) this.dataset[camel(n.slice(5))] = String(v);
+    if (n === 'class') this.className = String(v);
+    if (n === 'id') this.id = String(v);
+  };
+  Element.prototype.getAttribute = function (n) {
+    if (n === 'class') return this.className || null;
+    if (n === 'id') return this.id || null;
+    return (this._attrs && Object.prototype.hasOwnProperty.call(this._attrs, n)) ? this._attrs[n] : null;
+  };
+  Element.prototype.removeChild = function (c) {
+    var i = this.childNodes.indexOf(c);
+    if (i >= 0) this.childNodes.splice(i, 1);
+    c.parentNode = null;
+    return c;
+  };
+  // Appending a <script> runs it, which is how the userscript reaches the page
+  // context. globalThis.__cspBlock simulates a page CSP: the element is added
+  // but never executes (no exception -- that is what browsers actually do).
+  globalThis.__evalCount = 0;
+  Element.prototype.appendChild = function (c) {
+    c.parentNode = this;
+    this.childNodes.push(c);
+    if (c.tagName === 'SCRIPT' && c.textContent && !globalThis.__cspBlock) {
+      globalThis.__evalCount++;
+      (0, eval)(c.textContent);
+    }
+    return c;
+  };
   Element.prototype.insertBefore = function (n, ref) {
     var i = this.childNodes.indexOf(ref);
     if (i < 0) i = this.childNodes.length;

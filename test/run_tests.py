@@ -173,5 +173,43 @@ pump(ctx)
 check('unrecognised YAML is passed through, not swallowed',
       ctx.eval('globalThis.__OUT') == 'this: is not\n  the expected\nshape\n')
 
+print('\n== 13. bootstrap reaches the page context ==')
+ctx = new_ctx()
+check('script injected itself into the page and ran there', ctx.eval('globalThis.__evalCount') == 1)
+check('document marked active', ctx.eval('document.documentElement.getAttribute("data-ccfrf-active") === "1"'))
+check('reports the page context in the console',
+      any('running in the page context' in l for l in json.loads(ctx.eval('JSON.stringify(globalThis.__logs)'))))
+check('fetch is patched after injection',
+      ctx.eval('window.fetch.toString().indexOf("CONF_URL_RE") !== -1'))
+
+print('\n== 14. re-running the userscript does not double up ==')
+ctx.eval(SCRIPT)
+ctx.eval('__runTimers();')
+check('still exactly one injection', ctx.eval('globalThis.__evalCount') == 1)
+check('still exactly one panel', ctx.eval('document.querySelectorAll("#ccfrf-panel").length') == 1)
+
+print('\n== 15. a page CSP that blocks injection falls back in place ==')
+ctx = quickjs.Context()
+ctx.eval('globalThis.__YAML = ' + json.dumps(RAW) + ';')
+ctx.eval(SHIM)
+ctx.eval('globalThis.__cspBlock = true;')
+ctx.eval('var sec=document.createElement("section");var tz=document.createElement("div");'
+         'tz.className="timezone";sec.appendChild(tz);document.body.appendChild(sec);')
+ctx.eval('localStorage.setItem("ccfrf_selected", %s);' % json.dumps(json.dumps(['us'])))
+ctx.eval(SCRIPT)
+ctx.eval('__runTimers();')
+check('injection did not execute', ctx.eval('globalThis.__evalCount') == 0)
+check('warns that the page context was not reached',
+      any('could not reach the page context' in l
+          for l in json.loads(ctx.eval('JSON.stringify(globalThis.__logs)'))))
+check('panel is still built', ctx.eval('!!document.getElementById("ccfrf-panel")'))
+check('panel tells the user how to fix it',
+      'Allow user scripts' in ctx.eval('document.querySelector(".ccfrf-count").textContent'),
+      ctx.eval('document.querySelector(".ccfrf-count").textContent')[:80])
+# In a browser the sandbox is a separate world, so this only proves the fallback
+# code path runs; the extension test is what proves the real-world behaviour.
+check('fallback path still executes the filter without error',
+      fetch_filtered(ctx) == V.filter_yaml(RAW, {'us'})['text'])
+
 print('\n' + ('ALL CHECKS PASSED' if not fails else '%d CHECK(S) FAILED: %s' % (len(fails), fails)))
 sys.exit(1 if fails else 0)

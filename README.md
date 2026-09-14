@@ -35,10 +35,36 @@
 ## 安装
 
 1. 装 [Tampermonkey](https://www.tampermonkey.net/)（Violentmonkey 也行）。
-2. 点这里安装：**[ccfddl-region-filter.user.js](https://raw.githubusercontent.com/owenfucell/ccfddl-region-filter/main/ccfddl-region-filter.user.js)**
-3. 打开 <https://ccfddl.com/>，筛选面板就在 CCF 分类那一排的下面。
+2. **Chrome / Edge 用户请先做这一步**：打开 `chrome://extensions`，找到 Tampermonkey → 详细信息 →
+   打开 **「允许用户脚本 / Allow user scripts」**（Chrome 138 以下是开启右上角的「开发者模式」）。
+   不开的话油猴拿不到页面上下文，脚本会跑但筛选不生效，详见下面的[排查](#排查)。
+3. 点这里安装：**[ccfddl-region-filter.user.js](https://raw.githubusercontent.com/owenfucell/ccfddl-region-filter/main/ccfddl-region-filter.user.js)**
+4. 打开 <https://ccfddl.com/>，筛选面板就在 CCF 分类那一排的下面。
 
 勾选之后点「应用（刷新）」。**需要刷新是设计如此**，原因见下。
+
+## 排查
+
+**面板出来了，但底下显示「⚠ 脚本被限制在扩展沙箱里」，会议一条没少。**
+
+这是最常见的情况，几乎都出在 Chrome/Edge 上。筛选靠替换 `window.fetch`，只有脚本跑在**页面自己的
+JS 上下文**里才有用。Chrome MV3 下油猴需要 `chrome.userScripts` 权限才能把 `@grant none` 的脚本放进
+页面上下文；这个权限要用户手动开，没开的时候油猴会退到扩展的隔离世界——DOM 是共用的，所以面板照样画得出来，
+但那里的 `window.fetch` 和页面用的根本不是同一个对象，patch 了也没用。
+
+修法：`chrome://extensions` → Tampermonkey → 详细信息 → 打开「允许用户脚本 / Allow user scripts」
+（Chrome 138 以下开「开发者模式」），然后刷新页面。参考
+[Tampermonkey FAQ Q209](https://www.tampermonkey.net/faq.php?locale=en&q=Q209) 和
+[Tampermonkey#2607](https://github.com/Tampermonkey/tampermonkey/issues/2607)。
+
+在隔离世界里脚本会自己尝试往页面插一个 `<script>` 爬回页面上下文；Chrome 会用扩展自身的 CSP 把这种内联
+注入挡掉，所以那条路在 Chrome 上走不通——脚本会明确把上面这段提示打在面板和控制台里，而不是装作筛过了。
+`test/extension_test.py` 就是专门守着这个行为的回归测试。
+
+**面板显示「⚠ 未拦截到会议数据请求」。**
+
+这是另一回事：脚本进到页面上下文了，但没看到 `allconf.yml` 的请求，多半是上游改了数据加载方式。
+欢迎提 issue。
 
 ## 原理
 
@@ -91,6 +117,13 @@ python3 test/browser_test.py
 
 它按 Tampermonkey 的方式注入脚本，确认 WASM 应用确实只渲染了筛选后的会议。
 
+```bash
+python3 test/extension_test.py
+```
+
+这个把脚本当成真正的 Chrome 扩展内容脚本加载，主世界和隔离世界各跑一遍：主世界必须完整筛选，
+隔离世界必须给出可照做的提示而不是静默失效。
+
 ## 兼容性说明
 
 脚本靠替换 `window.fetch` 工作。如果上游改了数据加载方式或者 `allconf.yml` 的结构，筛选会**失效但不会破坏页面**——面板会显示「⚠ 未拦截到会议数据请求，筛选可能未生效」，站点照常使用。遇到这种情况欢迎提 issue。
@@ -102,6 +135,11 @@ python3 test/browser_test.py
 The site lets you filter by CCF category and rank, but not by where the conference actually happens. This script adds that: a dedicated **US** toggle, eight continental groups, and 19 selectable buckets in total — including Greater China, East Asia (other), Southeast Asia, South Asia, Central Asia, and MENA as separate buckets.
 
 **Install:** [Tampermonkey](https://www.tampermonkey.net/), then [ccfddl-region-filter.user.js](https://raw.githubusercontent.com/owenfucell/ccfddl-region-filter/main/ccfddl-region-filter.user.js). The panel appears under the CCF category checkboxes on <https://ccfddl.com/>.
+
+**Chrome/Edge users:** enable **"Allow user scripts"** for Tampermonkey in `chrome://extensions`
+(or developer mode below Chrome 138) *before* installing. Without it Chrome MV3 cannot give the
+script the page's JavaScript context, so `window.fetch` cannot be replaced: the panel appears but
+nothing is filtered. The panel says so explicitly when this happens.
 
 **How it works:** ccfddl.com is a Rust/Leptos WASM app that renders 10 rows per page, so hiding rows in the DOM would wreck pagination and counts. Instead the script replaces `window.fetch` at `document-start`, intercepts `/conference/allconf.yml`, drops the conference-year entries whose `place` does not match, and hands the filtered YAML to the app — so the site's own filtering, sorting, pagination and counts all stay correct. The trade-off is that changing the selection needs one page reload, which is why the panel has an explicit Apply button.
 
