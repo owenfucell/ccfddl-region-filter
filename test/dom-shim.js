@@ -11,8 +11,15 @@
   var timers = [], nextId = 1;
   globalThis.setTimeout = function (fn, ms) { timers.push({ id: nextId, fn: fn, ms: ms || 0 }); return nextId++; };
   globalThis.clearTimeout = function (id) { timers = timers.filter(function (t) { return t.id !== id; }); };
-  globalThis.setInterval = function () { return nextId++; };   // never fires in tests
-  globalThis.clearInterval = function () {};
+  var intervals = [];
+  globalThis.setInterval = function (fn) { var id = nextId++; intervals.push({ id: id, fn: fn }); return id; };
+  globalThis.clearInterval = function (id) { intervals = intervals.filter(function (t) { return t.id !== id; }); };
+  // drive registered intervals n times, honouring clearInterval between ticks
+  globalThis.__tickIntervals = function (n) {
+    for (var i = 0; i < n; i++) intervals.slice().forEach(function (t) {
+      if (intervals.indexOf(t) >= 0) t.fn();
+    });
+  };
   globalThis.__runTimers = function () {
     var guard = 0;
     while (timers.length && guard++ < 50) {
@@ -157,6 +164,14 @@
     removeItem: function (k) { delete store[k]; },
     _dump: function () { return store; }
   };
+
+  var sessionStore = {};
+  globalThis.sessionStorage = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(sessionStore, k) ? sessionStore[k] : null; },
+    setItem: function (k, v) { sessionStore[k] = String(v); },
+    removeItem: function (k) { delete sessionStore[k]; }
+  };
+  globalThis.performance = { getEntriesByType: function () { return [{ activationStart: 0 }]; } };
 
   globalThis.Response = function (bodyText, init) {
     init = init || {};

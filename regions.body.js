@@ -19,6 +19,7 @@
     var DATA = /*__REGION_DATA__*/ null /*__END_REGION_DATA__*/;
 
     var LS_SELECTED = 'ccfrf_selected';
+    var SS_RECOVERED = 'ccfrf_recovered';
     var LS_COLLAPSED = 'ccfrf_collapsed';
     var CONF_URL_RE = /\/conference\/allconf\.yml(\?|$)/;
 
@@ -541,6 +542,38 @@
       pending = setTimeout(function () { pending = null; anchorAndInject(); }, 60);
     }
 
+    // If the app already had its data before we could replace fetch -- the page
+    // was prerendered by the omnibox, or the manager injected us late -- then no
+    // amount of waiting helps, because the request is long gone. One reload does
+    // fix it: on a normal load the patch is in place before anything is asked
+    // for. Bounded to a single reload per tab, and only when a filter is
+    // actually selected, so it can never loop.
+    function recoverIfDataArrivedFirst() {
+      if (!inPageContext || !applied.size) return;
+      var waited = 0;
+      var timer = setInterval(function () {
+        if (stats.intercepted) {
+          clearInterval(timer);
+          try { sessionStorage.removeItem(SS_RECOVERED); } catch (e) {}
+          return;
+        }
+        // a rendered row means the app has its data and we missed the request
+        var rendered = document.querySelector('.conf-title');
+        if (!rendered && (waited += 500) < 20000) return;
+        clearInterval(timer);
+        if (!rendered) return;
+        try {
+          if (sessionStorage.getItem(SS_RECOVERED) === '1') return;
+          sessionStorage.setItem(SS_RECOVERED, '1');
+        } catch (e) { return; }
+        var nav = (performance.getEntriesByType('navigation') || [])[0];
+        console.warn('[ccf-region-filter] the conference list loaded before the filter could ' +
+                     'attach' + (nav && nav.activationStart ? ' (page was prerendered)' : '') +
+                     '; reloading once to apply it');
+        location.reload();
+      }, 500);
+    }
+
     function start() {
       // may not have existed when main() began, on very early injection
       if (document.documentElement) {
@@ -556,6 +589,7 @@
       }, 400);
       // if nothing was intercepted, say so instead of pretending the filter works
       setTimeout(function () { if (!stats.intercepted) refreshPanel(); }, 8000);
+      recoverIfDataArrivedFirst();
     }
 
     if (document.readyState === 'loading') {

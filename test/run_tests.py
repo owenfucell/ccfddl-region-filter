@@ -211,5 +211,48 @@ check('panel tells the user how to fix it',
 check('fallback path still executes the filter without error',
       fetch_filtered(ctx) == V.filter_yaml(RAW, {'us'})['text'])
 
+print('\n== 16. recovering when the data arrived before the filter attached ==')
+
+def missed_data_ctx(selected, already_recovered=False):
+    """A page that already rendered its list without us ever seeing the fetch."""
+    c = quickjs.Context()
+    c.eval('globalThis.__YAML = ' + json.dumps(RAW) + ';')
+    c.eval(SHIM)
+    c.eval('localStorage.setItem("ccfrf_selected", %s);' % json.dumps(json.dumps(selected)))
+    if already_recovered:
+        c.eval('sessionStorage.setItem("ccfrf_recovered", "1");')
+    c.eval("""
+      var sec=document.createElement('section');
+      var tz=document.createElement('div'); tz.className='timezone'; sec.appendChild(tz);
+      var row=document.createElement('div'); row.className='conf-title'; sec.appendChild(row);
+      document.body.appendChild(sec);
+    """)
+    c.eval(SCRIPT)
+    c.eval('__runTimers();')
+    return c
+
+c = missed_data_ctx(['us'])
+c.eval('__tickIntervals(3);')
+check('reloads once to pick the data up', c.eval('globalThis.__reloaded') == 1)
+check('marks the tab so it can never loop',
+      c.eval('sessionStorage.getItem("ccfrf_recovered") === "1"'))
+c.eval('__tickIntervals(10);')
+check('no further reloads from the same page', c.eval('globalThis.__reloaded') == 1)
+
+c = missed_data_ctx(['us'], already_recovered=True)
+c.eval('__tickIntervals(10);')
+check('a tab that already recovered does not reload again', c.eval('globalThis.__reloaded') == 0)
+
+c = missed_data_ctx([])
+c.eval('__tickIntervals(10);')
+check('no reload when no region is selected', c.eval('globalThis.__reloaded') == 0)
+
+c = missed_data_ctx(['us'])
+fetch_filtered(c)
+c.eval('__tickIntervals(10);')
+check('no reload once the data was intercepted normally', c.eval('globalThis.__reloaded') == 0)
+check('recovery marker cleared after a good load',
+      c.eval('sessionStorage.getItem("ccfrf_recovered") === null'))
+
 print('\n' + ('ALL CHECKS PASSED' if not fails else '%d CHECK(S) FAILED: %s' % (len(fails), fails)))
 sys.exit(1 if fails else 0)
