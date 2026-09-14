@@ -1,0 +1,4 @@
+# full upstream data dump, fetched on demand for local runs
+/allconf.yml
+__pycache__/
+*.pyc

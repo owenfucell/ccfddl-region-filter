@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install quickjs pyyaml
+      - name: userscript is up to date with its sources
+        run: |
+          ./build.sh
+          git diff --exit-code ccfddl-region-filter.user.js
+      - name: region table sanity check
+        run: python3 validate.py
+      - name: run the userscript under QuickJS
+        run: python3 test/run_tests.py
